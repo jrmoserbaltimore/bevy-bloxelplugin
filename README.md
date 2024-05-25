@@ -27,6 +27,17 @@ be interesting, but it's not a goal here.
 Objects can be taken off the grid and moved in the physical world, then placed
 back onto the grid when they settle.
 
+### Subgrid
+
+Grids can be created such that they are then movable as game objects.  This for
+example allows the building of vehicles or the movement of a complex object to
+a location on the grid, where it can then be placed by moving those objects
+into the main world grid.
+
+More generally, the "world grid" is just a subgrid treated as such, and grids
+can be merged into other grids, while areas of grids can be split off into
+separate subgrids.
+
 ## Manage blocks
 
 Managing blocks on the world grid has performance implications.  A face of
