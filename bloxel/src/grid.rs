@@ -20,42 +20,60 @@ struct Grid;
 #[derive(Component)]
 struct GridPosition {
     position: IVec3,
-    grid: Entity,
+    grid: Option<Entity>,
 }
 
 // world_position() gives the absolute position in 3D space.  If a grid unit
 // is ever not equal to a world unit, world_position() will return the adjusted
 // position().
-// TODO: Need a way to find a position relative to an arbitrary grid
 // TODO: Need a way to change what grid the entity is on
 trait GridEntity {
     fn position(
         &self,
-        query: Query<(&GridId, &GridPosition)>) -> IVec3;
+        query: &Query<(&Grid, &GridPosition)>) -> IVec3;
     fn local_position(&self) -> IVec3;
+    fn relative_position(&self,
+        query: &Query<(&Grid, &GridPosition)>,
+        grid: &Entity) -> IVec3;
     fn world_position(
         &self,
-        query: Query<(&GridId, &GridPosition)>) -> Vec3;
+        query: &Query<(&Grid, &GridPosition)>) -> Vec3;
     fn set_position(&mut self, position: IVec3);
 }
 
 impl GridEntity for GridPosition {
     fn position(
         &self,
-        query: Query<(&GridId, &GridPosition)>) -> IVec3 {
-        match self.position {
-            0 => self.position,
-            // find the given grid, get its position
-            _ => query.get(self.grid).position(),
+        query: &Query<(&Grid, &GridPosition)>) -> IVec3 {
+        match self.grid {
+            Some(grid_entity) => {
+                if let Ok((_, parent_position)) = query.get(grid_entity) {
+                    self.position + parent_position.position(query)
+                } else {
+                    panic!("Attempted to locate Entity on non-existent grid.");
+                }
+            }
+            None => self.position,
         }
     }
     fn local_position(&self) -> IVec3 {
         self.position
     }
+    fn relative_position(
+        &self,
+        query: &Query<(&Grid, &GridPosition)>,
+        grid: &Entity) -> IVec3 {
+        if let OK((_, grid_position)) = query.get(grid) {
+            self.position() - grid_position.position()
+        } else {
+            panic!("Attempted to locate Entity relative to non-existent grid.");
+        }
+        
+    }
     fn world_position(
         &self,
-        query: Query<(&GridId, &GridPosition)>) -> Vec3 {
-        self.position(query).as_Vec3()
+        query: Query<(&Grid, &GridPosition)>) -> Vec3 {
+        self.position(query).as_vec3()
     }
     fn set_position(&mut self, position: IVec3) {
         self.position = position;

@@ -2,7 +2,7 @@
 
 //! Voxel block world for Bevy
 
-use bevy::prelude::*;
+use bevy::app::{Plugin,App};
 
 #[derive(Default)]
 pub struct BloxelPlugin {
