@@ -30,7 +30,7 @@ pub struct GridObject {
     pub kind: u16,
 }
 
-use bevy::math::UVec3;
+use bevy::math::IVec3;
 
 pub trait Prop {
 
