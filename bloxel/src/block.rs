@@ -6,6 +6,11 @@ use bevy::math::IVec3;
 #[derive(Component)]
 pub struct GridVoxel;
 
+// Filter Without<GridVoxelUnmeshable> in the greedy mesher.
+// This can include voxels that are altered by cutting them.
+#[derive(Component)]
+pub struct GridVoxelUnmeshable;
+
 #[derive(Default)]
 pub struct GridVoxelKind {
     // Need a way to indicate what texture to use
@@ -22,10 +27,12 @@ pub struct GridObjectKind {
     // pub name:  str,
 }
 
-// location is the (x,y,z) grid location
-// type is the type of object
+// Objects with health are set up as such:
+//   - The object type defines its maximum HP
+//   - The object has a HitPoints component when it has less than full HP
+// For voxels, this saves 1 byte per voxel versus assigning a 1-byte HP value
+// to every voxel object.  A voxel only has HP when it's damaged, and in games
+// where voxels are only temporarily damaged the memory to store HP data is
+// released after several seconds.
 #[derive(Component)]
-pub struct GridObject {
-    pub location: IVec3,
-    pub kind: u16,
-}
+pub struct HitPoints(u16);
