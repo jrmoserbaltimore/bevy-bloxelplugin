@@ -87,12 +87,18 @@ impl ChunkManager{
 
 // Component of a given grid
 // FIXME:  Replace ChunkObjects with specific types
+// voxels:  meshable voxels, keyed by location in the chunk
+// props:  non-meshable props
+// culled:  Bitmap of voxels deleted from memory, bit position = x,
+//          u32 = y, plane of u32 = z
+// delta:  list of changed locations
 #[derive(Component)]
 struct GridChunk {
     location: IVec3,
     id: u16,
-    voxels: BTreeMap<u16, ChunkObject>,
+    voxels: BTreeMap<u16, (VoxelKind, ChunkLocation)>,
     props: BTreeMap<u16, ChunkObjects>,
+    delta: Vec<u16>,
 }
 
 impl GridChunk {
@@ -102,6 +108,7 @@ impl GridChunk {
             id: manager.allocate(),
             voxels: BTreeMap::new(),
             props: BTreeMap::new(),
+            delta: Vec::new(),
         }
     }
 
@@ -113,42 +120,65 @@ impl GridChunk {
         let mut xy = [[0u32; 32]; 32];
         let mut yz = [[0u32; 32]; 32];
         let mut xz = [[0u32; 32]; 32];
-    
-        // Collect keys from voxels to avoid multiple borrow issues
-        let voxels_keys: Vec<_> = self.voxels.keys().cloned().collect();
 
         // Thread for generating the xy array
+        // These arrays are 4096 bytes and using one thread per array gives
+        // better cache performance than breaking it into further threads
+        // FIXME:  Also play back the deltas in chronological order.  The
+        // greedy mesher will merge the deltas into the RLE.
+        let voxels = self.voxels.iter();
         let xy_handle = thread::spawn(move || {
-            for k in &voxels_keys {
-                let location: ChunkLocation = ChunkLocation { location: *k };
-                let x = location.x();
-                let y = location.y();
-                let z = location.z();
-                xy[z][y] |= 1 << (31 - x);
+            for (k, (kind, r)) in voxels {
+                let location: ChunkLocation = ChunkLocation { location: k };
+                let rle: ChunkLocation = ChunkLocation { location: r };
+                // These are run across x with a length of rle.x(), so create a
+                // string of 1 bits rle.x long, then put the left-most bit at x
+                let mask = ((2 << rle.x()) - 1) << location.x();
+
+                // These need to propagate across all y and z locations
+                for y in location.y()..=location.y()+rle.y() {
+                    for z in location.z()..=location.z()+rle.z() {
+                        xy[z][y] |= mask;
+                    }
+                }
             }
             xy
         });
     
-        // Thread for generating the yz array
+        let voxels = self.voxels.iter();
         let yz_handle = thread::spawn(move || {
-            for k in &voxels_keys {
-                let location: ChunkLocation = ChunkLocation { location: *k };
-                let x = location.x();
-                let y = location.y();
-                let z = location.z();
-                yz[x][z] |= 1 << (31 - y);
+            for (k, (kind, r)) in voxels {
+                let location: ChunkLocation = ChunkLocation { location: k };
+                let rle: ChunkLocation = ChunkLocation { location: r };
+                // These are run across x with a length of rle.x(), so create a
+                // string of 1 bits rle.x long, then put the left-most bit at x
+                let mask = ((2 << rle.y()) - 1) << location.y();
+
+                // These need to propagate across all y and z locations
+                for x in location.x()..=location.x()+rle.x() {
+                    for z in location.z()..=location.z()+rle.z() {
+                        yz[x][z] |= mask;
+                    }
+                }
             }
             yz
         });
-    
-        // Thread for generating the xz array
+
+        let voxels = self.voxels.iter();
         let xz_handle = thread::spawn(move || {
-            for k in &voxels_keys {
-                let location: ChunkLocation = ChunkLocation { location: *k };
-                let x = location.x();
-                let y = location.y();
-                let z = location.z();
-                xz[y][z] |= 1 << (31 - x);
+            for (k, (kind, r)) in voxels {
+                let location: ChunkLocation = ChunkLocation { location: k };
+                let rle: ChunkLocation = ChunkLocation { location: r };
+                // These are run across x with a length of rle.x(), so create a
+                // string of 1 bits rle.x long, then put the left-most bit at x
+                let mask = ((2 << rle.x()) - 1) << location.x();
+
+                // These need to propagate across all y and z locations
+                for y in location.y()..=location.y()+rle.y() {
+                    for z in location.z()..=location.z()+rle.z() {
+                        xz[y][z] |= mask;
+                    }
+                }
             }
             xz
         });

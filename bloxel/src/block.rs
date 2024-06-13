@@ -12,7 +12,7 @@ pub struct GridVoxel;
 pub struct GridVoxelUnmeshable;
 
 #[derive(Default)]
-pub struct GridVoxelKind {
+pub struct VoxelKind {
     // Need a way to indicate what texture to use
     // including textures that change with size
     // pub texture: ?,
