@@ -116,7 +116,7 @@ impl GridChunk {
     // move this to some appropriate place.
     // Not worried about extra faces appearing between chunks for now, maybe
     // improve on that later.
-    fn gen_mesh_map(&self) {
+    fn gen_mesh_map(&mut self) {
         let mut xy = [[0u32; 32]; 32];
         let mut yz = [[0u32; 32]; 32];
         let mut xz = [[0u32; 32]; 32];
@@ -189,15 +189,11 @@ impl GridChunk {
         let xz = xz_handle.join().unwrap();
     
         // TODO: Greedy meshing using TanTan's binary greedy meshing algorithm
+
+        // TODO: T-junctions will create cracks.  Generate a set of boxes here
+        // resolving T-junctions.  Generate the mesh from that first, then from
+        // the voxel data excluding any locations of resolved boxes.  Hitboxes
+        // and on-disk storage use the unresolved voxel data.
     }
 }
 
-// chunk:  the ID of the chunk.  Up to 2^16 chunks can be loaded, and when
-// unloaded the given chunk ID is freed up.
-// local_position:  the position inside the chunk
-// FIXME:  Probably not needed since we have everything in the chunk itself
-#[derive(Component)]
-struct ChunkObject {
-    chunk: u16,
-    local_position: u8,
-}
