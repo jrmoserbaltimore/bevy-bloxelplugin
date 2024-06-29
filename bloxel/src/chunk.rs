@@ -3,7 +3,7 @@
 // Chunking stores big worlds on disk.
 
 use std::vec;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap,BTreeSet};
 use bevy::math::IVec3;
 use rayon::prelude::*;
 
@@ -89,8 +89,6 @@ impl ChunkManager{
 // FIXME:  Replace ChunkObjects with specific types
 // voxels:  meshable voxels, keyed by location in the chunk
 // props:  non-meshable props
-// culled:  Bitmap of voxels deleted from memory, bit position = x,
-//          u32 = y, plane of u32 = z
 // delta:  list of changed locations
 #[derive(Component)]
 struct GridChunk {
@@ -98,7 +96,7 @@ struct GridChunk {
     id: u16,
     voxels: BTreeMap<u16, (VoxelKind, ChunkLocation)>,
     props: BTreeMap<u16, ChunkObjects>,
-    delta: Vec<u16>,
+    delta: Vec<(ChunkLocation, Option<VoxelKind>, ChunkLocation)>,
 }
 
 impl GridChunk {
@@ -112,15 +110,78 @@ impl GridChunk {
         }
     }
 
-    // TODO:  Perform the greedy meshing, discard the xy yz xz arrays,
-    // move this to some appropriate place.
-    // Not worried about extra faces appearing between chunks for now, maybe
-    // improve on that later.
-    fn gen_mesh_map(&mut self) {
+    // Use a greedy mesher to merge the deltas into the voxel map.  Do this
+    // before storing to disk!
+    fn encode_voxels(&mut self) {
+        let mut voxel_kinds: BTreeSet<VoxelKind> = BTreeSet::new();
+
+        // Make note of all the unique kinds of voxels in this chunk.
+        // We will use this when completing greedy meshing.
+        for (kind, s) in voxels.values() {
+            voxel_kinds.insert(kind);
+        }
+        for (l, kind, s) in delta.iter() {
+            voxel_kinds.insert(kind);
+        }
+
+        // First, merge the deltas in and greedy mesh to create the new RLE
+        let mut new_voxel_rle: BTreeMap<u16, (VoxelKind, ChunkLocation)> = BTreeMap::new();
+        for kind in voxel_kinds.par_iter() {
+            let mut xy_kind = [[0u32; 32]; 32];
+            let mut yz_kind = [[0u32; 32]; 32];
+            let mut xz_kind = [[0u32; 32]; 32];
+            for (k, (this_kind, r)) in self.voxels.iter() {
+                if this_kind != kind {
+                    continue;
+                }
+                let location: ChunkLocation = ChunkLocation { location: k };
+                let rle: ChunkLocation = ChunkLocation { location: r };
+                // These are run across x with a length of rle.x(), so create a
+                // string of 1 bits rle.x long, then put the left-most bit at x
+                let mask = ((2 << rle.x()) - 1) << location.x();
+
+                // These need to propagate across all y and z locations
+                for y in location.y()..=location.y()+rle.y() {
+                    for z in location.z()..=location.z()+rle.z() {
+                        xy_kind[z][y] |= mask;
+                    }
+                }
+            }
+            // Merge deltas
+            for (k, this_kind, r) in self.deltas.iter() {
+                if Some(this_kind) && this_kind != kind {
+                    continue;
+                }
+                let location: ChunkLocation = ChunkLocation { location: k };
+                let rle: ChunkLocation = ChunkLocation { location: r };
+                // These are run across x with a length of rle.x(), so create a
+                // string of 1 bits rle.x long, then put the left-most bit at x
+                let mut mask: u32 = ((2 << rle.x()) - 1) << location.x();
+                // If this_kind is empty, then delete these bits.
+                if !Some(this_kind) {
+                    mask = !mask;
+                }
+
+                // These need to propagate across all y and z locations
+                for y in location.y()..=location.y()+rle.y() {
+                    for z in location.z()..=location.z()+rle.z() {
+                        xy_kind[z][y] |= mask;
+                    }
+                }
+            }
+            // TODO:  Greedy mesh and store in new_voxel_rle
+        }
+
+        self.voxels = new_voxel_rle;
+    }
+
+    // Performs binary meshing to create a mesh for the chunk.
+    // Will eventually need some way to address cracks between chunks.
+    fn create_mesh(&mut self) {
         let mut xy = [[0u32; 32]; 32];
         let mut yz = [[0u32; 32]; 32];
         let mut xz = [[0u32; 32]; 32];
-
+        // Use the prepared voxel data for binary meshing
         // Thread for generating the xy array
         // These arrays are 4096 bytes and using one thread per array gives
         // better cache performance than breaking it into further threads
@@ -187,13 +248,8 @@ impl GridChunk {
         let xy = xy_handle.join().unwrap();
         let yz = yz_handle.join().unwrap();
         let xz = xz_handle.join().unwrap();
-    
-        // TODO: Greedy meshing using TanTan's binary greedy meshing algorithm
 
-        // TODO: T-junctions will create cracks.  Generate a set of boxes here
-        // resolving T-junctions.  Generate the mesh from that first, then from
-        // the voxel data excluding any locations of resolved boxes.  Hitboxes
-        // and on-disk storage use the unresolved voxel data.
+        // TODO: Make mesh
     }
 }
 
