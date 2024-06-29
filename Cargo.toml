@@ -8,6 +8,7 @@ edition = "2021"
 [dependencies]
 rayon="1.10"
 bevy="0.13"
+lz4_flex="0.11"
 
 [workspace]
 members = [
