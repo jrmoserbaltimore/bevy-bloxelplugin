@@ -7,22 +7,10 @@ use std::collections::{BTreeMap,BTreeSet};
 use bevy::math::IVec3;
 use rayon::prelude::*;
 
-#[derive(Default)]
-struct ChunkLocation {
-    location: u16,
-}
+#[derive(PartialEq, Eq, PartialOrd, Ord)]
+struct PackedXYZ32(u16);
 
-impl ChunkLocation{
-    fn new() -> Self {
-        ChunkLocation {
-            location: 0,
-        }
-    }
-
-    pub fn location(&self) -> u16 {
-        self.location
-    }
-
+impl PackedXYZ32{
     pub fn set_location(&mut self, x: u8, y: u8, z: u8) {
         self.set_x(x);
         self.set_y(y);
@@ -30,27 +18,27 @@ impl ChunkLocation{
     }
     
     pub fn x(&self) -> u8 {
-        (self.location >> 10) & 0b1_1111
+        (self.0 >> 10) & 0b1_1111
     }
 
     pub fn y(&self) -> u8 {
-        (self.location >> 5) & 0b1_1111
+        (self.0 >> 5) & 0b1_1111
     }
 
     pub fn z(&self) -> u8 {
-        self.location & 0b1_1111
+        self.0 & 0b1_1111
     }
 
     pub fn set_x(&mut self, x: u8) {
-        self.location = (self.location & 0b0_00000_11111_11111) | ((x as u16 & 0b1_1111) << 10);
+        self.0 = (self.0 & 0b0_00000_11111_11111) | ((x as u16 & 0b1_1111) << 10);
     }
 
     pub fn set_y(&mut self, y: u8) {
-        self.location = (self.location & 0b0_11111_00000_11111) | ((y as u16 & 0b1_1111) << 5);
+        self.0 = (self.0 & 0b0_11111_00000_11111) | ((y as u16 & 0b1_1111) << 5);
     }
 
     pub fn set_z(&mut self, z: u8) {
-        self.location = (self.location & 0b0_11111_11111_00000) | (z as u16 & 0b1_1111);
+        self.0 = (self.0 & 0b0_11111_11111_00000) | (z as u16 & 0b1_1111);
     }
 }
 // Chunk manager provides an available chunk ID
@@ -94,9 +82,9 @@ impl ChunkManager{
 struct GridChunk {
     location: IVec3,
     id: u16,
-    voxels: BTreeMap<u16, (VoxelKind, ChunkLocation)>,
+    voxels: BTreeMap<u16, (&VoxelKind, PackedXYZ32)>,
     props: BTreeMap<u16, ChunkObjects>,
-    delta: Vec<(ChunkLocation, Option<VoxelKind>, ChunkLocation)>,
+    delta: Vec<(PackedXYZ32, Option<&VoxelKind>, PackedXYZ32)>,
 }
 
 impl GridChunk {
@@ -110,10 +98,43 @@ impl GridChunk {
         }
     }
 
+    // This became horribly repetitive so it's a nested function now
+    fn build_bitmap(&mut uv: [[u32; 32]; 32], l: u16, &k: Option<&VoxelKind>, r: u16, &axis: str, clear: bool) {
+        let location: PackedXYZ32 = PackedXYZ32(l);
+        let rle: PackedXYZ32 = PackedXYZ32(r);
+
+        let (rle_u, rle_v, rle_w) = match axis {
+            "xy" => (rle.x(), rle.y(), rle.z()),
+            "yz" => (rle.y(), rle.z(), rle.x()),
+            "xz" => (rle.x(), rle.z(), rle.y()),
+            _ => unreachable!(),
+        };
+        let (location_u, location_v, location_w) = match axis {
+            "xy" => (location.x(), location.y(), location.z()),
+            "yz" => (location.y(), location.z(), location.x()),
+            "xz" => (location.x(), location.z(), location.y()),
+            _ => unreachable!(),
+        };
+
+        // These are run across u with a length of rle_u, so create a
+        // string of `1` bits rle_u long, then put the left-most bit at u
+        let mask: u32 = ((2 << rle_u) - 1) << location_u;
+
+        // These need to propagate across all v and w locations
+        for u in location_v..=location_u+rle_u {
+            for w in location_w()..=location_w+rle_w {
+                match clear {
+                    false => uv[w][v] |= mask,
+                    true => uv[w][y] &= !mask,
+                }
+            }
+        }
+    }
+
     // Use a greedy mesher to merge the deltas into the voxel map.  Do this
     // before storing to disk!
     fn encode_voxels(&mut self) {
-        let mut voxel_kinds: BTreeSet<VoxelKind> = BTreeSet::new();
+        let mut voxel_kinds: BTreeSet<&VoxelKind> = BTreeSet::new();
 
         // Make note of all the unique kinds of voxels in this chunk.
         // We will use this when completing greedy meshing.
@@ -124,49 +145,25 @@ impl GridChunk {
             voxel_kinds.insert(kind);
         }
 
-        // First, merge the deltas in and greedy mesh to create the new RLE
-        let mut new_voxel_rle: BTreeMap<u16, (VoxelKind, ChunkLocation)> = BTreeMap::new();
+        // Threaded by kind of voxel being meshed
+        let mut new_voxel_rle: BTreeMap<u16, (&VoxelKind, PackedXYZ32)> = BTreeMap::new();
         for kind in voxel_kinds.par_iter() {
-            let mut xy_kind = [[0u32; 32]; 32];
-            let mut yz_kind = [[0u32; 32]; 32];
-            let mut xz_kind = [[0u32; 32]; 32];
-            for (k, (this_kind, r)) in self.voxels.iter() {
-                if this_kind != kind {
-                    continue;
-                }
-                let location: ChunkLocation = ChunkLocation { location: k };
-                let rle: ChunkLocation = ChunkLocation { location: r };
-                // These are run across x with a length of rle.x(), so create a
-                // string of 1 bits rle.x long, then put the left-most bit at x
-                let mask = ((2 << rle.x()) - 1) << location.x();
-
-                // These need to propagate across all y and z locations
-                for y in location.y()..=location.y()+rle.y() {
-                    for z in location.z()..=location.z()+rle.z() {
-                        xy_kind[z][y] |= mask;
+            let mut xy = [[0u32; 32]; 32];
+            let mut yz = [[0u32; 32]; 32];
+            let mut xz = [[0u32; 32]; 32];
+            for (uv, plane) in ((xy, "xy"), (yz, "yz"), (xz, "xz")) {
+                for (l, (this_kind, r)) in self.voxels.iter() {
+                    if this_kind != kind {
+                        continue;
                     }
+                    build_bitmap(uv, l, this_kind, r, plane, false);
                 }
-            }
-            // Merge deltas
-            for (k, this_kind, r) in self.deltas.iter() {
-                if Some(this_kind) && this_kind != kind {
-                    continue;
-                }
-                let location: ChunkLocation = ChunkLocation { location: k };
-                let rle: ChunkLocation = ChunkLocation { location: r };
-                // These are run across x with a length of rle.x(), so create a
-                // string of 1 bits rle.x long, then put the left-most bit at x
-                let mut mask: u32 = ((2 << rle.x()) - 1) << location.x();
-                // If this_kind is empty, then delete these bits.
-                if !Some(this_kind) {
-                    mask = !mask;
-                }
-
-                // These need to propagate across all y and z locations
-                for y in location.y()..=location.y()+rle.y() {
-                    for z in location.z()..=location.z()+rle.z() {
-                        xy_kind[z][y] |= mask;
+                // Merge deltas
+                for (l, this_kind, r) in self.deltas.iter() {
+                    if this_kind.is_some() && this_kind != Some(kind) {
+                        continue;
                     }
+                    build_bitmap(uv, l, this_kind, r, plane, !this_kind.is_some);
                 }
             }
             // TODO:  Greedy mesh and store in new_voxel_rle
@@ -178,76 +175,30 @@ impl GridChunk {
     // Performs binary meshing to create a mesh for the chunk.
     // Will eventually need some way to address cracks between chunks.
     fn create_mesh(&mut self) {
-        let mut xy = [[0u32; 32]; 32];
-        let mut yz = [[0u32; 32]; 32];
-        let mut xz = [[0u32; 32]; 32];
         // Use the prepared voxel data for binary meshing
-        // Thread for generating the xy array
         // These arrays are 4096 bytes and using one thread per array gives
         // better cache performance than breaking it into further threads
-        // FIXME:  Also play back the deltas in chronological order.  The
-        // greedy mesher will merge the deltas into the RLE.
-        let voxels = self.voxels.iter();
-        let xy_handle = thread::spawn(move || {
-            for (k, (kind, r)) in voxels {
-                let location: ChunkLocation = ChunkLocation { location: k };
-                let rle: ChunkLocation = ChunkLocation { location: r };
-                // These are run across x with a length of rle.x(), so create a
-                // string of 1 bits rle.x long, then put the left-most bit at x
-                let mask = ((2 << rle.x()) - 1) << location.x();
-
-                // These need to propagate across all y and z locations
-                for y in location.y()..=location.y()+rle.y() {
-                    for z in location.z()..=location.z()+rle.z() {
-                        xy[z][y] |= mask;
-                    }
+        let handles = Vec::new();
+        for plane in ("xy", "yz", "xz") {
+            let voxels = self.voxels.iter();
+            let deltas = self.deltas.iter();
+            let mut uv = [[0u32; 32]; 32];
+            let uv_handle = thread::spawn(move || {
+                for (l, (kind, r)) in voxels {
+                    build_bitmap(uv, l, Some(kind), r, plane, false);
                 }
-            }
-            xy
-        });
-    
-        let voxels = self.voxels.iter();
-        let yz_handle = thread::spawn(move || {
-            for (k, (kind, r)) in voxels {
-                let location: ChunkLocation = ChunkLocation { location: k };
-                let rle: ChunkLocation = ChunkLocation { location: r };
-                // These are run across x with a length of rle.x(), so create a
-                // string of 1 bits rle.x long, then put the left-most bit at x
-                let mask = ((2 << rle.y()) - 1) << location.y();
-
-                // These need to propagate across all y and z locations
-                for x in location.x()..=location.x()+rle.x() {
-                    for z in location.z()..=location.z()+rle.z() {
-                        yz[x][z] |= mask;
-                    }
+                // Merge deltas
+                for (l, this_kind, r) in deltas {
+                    build_bitmap(uv, l, this_kind, r, plane, !this_kind.is_some);
                 }
-            }
-            yz
-        });
+                uv
+            });
+            handles.push(uv_handle);
+        }
 
-        let voxels = self.voxels.iter();
-        let xz_handle = thread::spawn(move || {
-            for (k, (kind, r)) in voxels {
-                let location: ChunkLocation = ChunkLocation { location: k };
-                let rle: ChunkLocation = ChunkLocation { location: r };
-                // These are run across x with a length of rle.x(), so create a
-                // string of 1 bits rle.x long, then put the left-most bit at x
-                let mask = ((2 << rle.x()) - 1) << location.x();
-
-                // These need to propagate across all y and z locations
-                for y in location.y()..=location.y()+rle.y() {
-                    for z in location.z()..=location.z()+rle.z() {
-                        xz[y][z] |= mask;
-                    }
-                }
-            }
-            xz
-        });
-    
-        // Reclaim ownership of the arrays
-        let xy = xy_handle.join().unwrap();
-        let yz = yz_handle.join().unwrap();
-        let xz = xz_handle.join().unwrap();
+        let xz = handles.pop().join().unwrap();
+        let yz = handles.pop().join().unwrap();
+        let xy = handles.pop().join().unwrap();
 
         // TODO: Make mesh
     }
