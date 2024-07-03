@@ -4,6 +4,10 @@ BloxelPlugin for Bevy
 This plugin provides a voxel world for Bevy, similar to games like Minecraft,
 Dragon Quest Builders, Cube World, Super Voxel World, and others.
 
+Be aware this engine is aligned to Bevy's coordinate system.  Most players will
+be familiar with `z` as height, so UX may benefit from relabling any in-game
+descriptions of the coordinate system.
+
 # General goal
 
 BloxelPlugin needs to do the following.
