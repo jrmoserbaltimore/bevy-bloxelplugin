@@ -3,7 +3,6 @@
 // Chunking stores big worlds on disk.
 
 use std::vec;
-use std::cmp::max;
 use std::collections::{BTreeMap,BTreeSet};
 use bevy::math::IVec3;
 use rayon::prelude::*;
@@ -131,7 +130,7 @@ impl GridChunk {
         let mask: u32 = ((2 << rle_u) - 1) << location_u;
 
         // These need to propagate across all v and w locations
-        for v in location_v..=location_u+rle_u {
+        for v in location_v..=location_v+rle_v {
             for w in location_w()..=location_w+rle_w {
                 match clear {
                     false => uv[v][w] |= mask,
@@ -149,10 +148,10 @@ impl GridChunk {
 
         // Make note of all the unique kinds of voxels in this chunk.
         // We will use this when completing greedy meshing.
-        for (kind, s) in voxels.values() {
+        for (kind, _) in voxels.values() {
             voxel_kinds.insert(Some(kind));
         }
-        for (l, kind, s) in delta.iter() {
+        for (_, kind, _) in delta.iter() {
             voxel_kinds.insert(kind);
         }
 
@@ -166,16 +165,16 @@ impl GridChunk {
                 if Some(this_kind) != kind {
                     continue;
                 }
-                build_bitmap(xy, l, this_kind, r, "xy", false);
+                build_bitmap(&mut xy, l, this_kind, r, "xy", false);
             }
             // Merge deltas; this_kind=None means delete that volume
             for (l, this_kind, r) in self.deltas.iter() {
                 if this_kind.is_some() && this_kind != kind {
                     continue;
                 }
-                build_bitmap(xy, l, this_kind, r, "xy", !this_kind.is_some());
+                build_bitmap(&mut xy, l, this_kind, r, "xy", !this_kind.is_some());
             }
-            // TODO:  Binary mesh and store in new_voxel_rle
+            // Binary mesh and store in new_voxel_rle
             
             let mut xy_left = [[0u32; 32]; 32];
             let mut xy_right = [[0u32; 32]; 32];
@@ -257,7 +256,6 @@ impl GridChunk {
                 }
             }
         }
-
         self.voxels = new_voxel_rle;
     }
 
@@ -274,11 +272,11 @@ impl GridChunk {
             let mut uv = [[0u32; 32]; 32];
             let uv_handle = thread::spawn(move || {
                 for (l, (kind, r)) in voxels {
-                    build_bitmap(uv, l, Some(kind), r, plane, false);
+                    build_bitmap(&mut uv, l, Some(kind), r, plane, false);
                 }
                 // Merge deltas
                 for (l, this_kind, r) in deltas {
-                    build_bitmap(uv, l, this_kind, r, plane, !this_kind.is_some);
+                    build_bitmap(&mut uv, l, this_kind, r, plane, !this_kind.is_some);
                 }
                 uv
             });
